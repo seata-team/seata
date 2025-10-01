@@ -1,0 +1,131 @@
+version: '3.8'
+
+services:
+  # Development Seata Server with hot reload
+  seata-server-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "36789:36789"  # HTTP API
+      - "36790:36790"  # gRPC API
+    environment:
+      - SEATA_STORE=redis
+      - SEATA_REDIS_URL=redis://redis:6379/
+      - SEATA_HTTP_PORT=36789
+      - SEATA_GRPC_PORT=36790
+      - RUST_LOG=debug
+      - RUST_BACKTRACE=1
+    volumes:
+      - .:/app
+      - cargo_cache:/usr/local/cargo/registry
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - seata-network
+    restart: unless-stopped
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass seata123
+    volumes:
+      - redis_data:/data
+    networks:
+      - seata-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # MySQL
+  mysql:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: seata123
+      MYSQL_DATABASE: seata
+      MYSQL_USER: seata
+      MYSQL_PASSWORD: seata123
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./sqls/dtmsvr.storage.mysql.sql:/docker-entrypoint-initdb.d/01-init.sql
+    networks:
+      - seata-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pseata123"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    command: --default-authentication-plugin=mysql_native_password
+
+  # PostgreSQL
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: seata
+      POSTGRES_USER: seata
+      POSTGRES_PASSWORD: seata123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sqls/dtmsvr.storage.postgres.sql:/docker-entrypoint-initdb.d/01-init.sql
+    networks:
+      - seata-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seata -d seata"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis Commander
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    ports:
+      - "8081:8081"
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:seata123
+    depends_on:
+      - redis
+    networks:
+      - seata-network
+    restart: unless-stopped
+
+  # Adminer
+  adminer:
+    image: adminer:latest
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mysql
+      - postgres
+    networks:
+      - seata-network
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+    driver: local
+  mysql_data:
+    driver: local
+  postgres_data:
+    driver: local
+  cargo_cache:
+    driver: local
+
+networks:
+  seata-network:
+    driver: bridge

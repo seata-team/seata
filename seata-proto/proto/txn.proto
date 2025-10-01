@@ -1,0 +1,48 @@
+syntax = "proto3";
+package seata.txn.v1;
+
+option go_package = "github.com/dtm-labs/seata-proto";
+
+message StartGlobalRequest {
+  string gid = 1;
+  string mode = 2; // saga|tcc|xa|msg|outbox|workflow
+  bytes payload = 3; // user-defined
+}
+
+message StartGlobalResponse {
+  string gid = 1;
+}
+
+message SubmitRequest { string gid = 1; }
+message SubmitResponse {}
+
+message AbortRequest { string gid = 1; }
+message AbortResponse {}
+
+message AddBranchRequest { string gid = 1; string branch_id = 2; string action = 3; }
+message AddBranchResponse {}
+
+message BranchTryRequest { string gid = 1; string branch_id = 2; string action = 3; }
+message BranchTryResponse {}
+
+message BranchStateRequest { string gid = 1; string branch_id = 2; }
+message BranchStateResponse {}
+
+message GetRequest { string gid = 1; }
+message GetResponse { bytes txn_json = 1; }
+
+message ListRequest { uint32 limit = 1; uint32 offset = 2; string status = 3; }
+message ListResponse { repeated bytes txn_json = 1; }
+
+service TransactionService {
+  rpc StartGlobal(StartGlobalRequest) returns (StartGlobalResponse);
+  rpc Submit(SubmitRequest) returns (SubmitResponse);
+  rpc Abort(AbortRequest) returns (AbortResponse);
+  rpc AddBranch(AddBranchRequest) returns (AddBranchResponse);
+  rpc BranchTry(BranchTryRequest) returns (BranchTryResponse);
+  rpc BranchSucceed(BranchStateRequest) returns (BranchStateResponse);
+  rpc BranchFail(BranchStateRequest) returns (BranchStateResponse);
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc List(ListRequest) returns (ListResponse);
+}
+

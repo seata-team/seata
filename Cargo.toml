@@ -1,0 +1,9 @@
+[workspace]
+members = [ "seata-proto","seata-server"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+authors = ["seata-labs migration"]
+license = "BSD-3-Clause"

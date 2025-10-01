@@ -1,0 +1,73 @@
+# seata-server configuration
+# This file is auto-loaded if present (conf / conf.yml / conf.yaml)
+
+# Ports
+http_port: 36789
+grpc_port: 36790
+jsonrpc_port: 36791
+
+# Logging
+log_level: info
+admin_base_path: ""
+
+# Execution controls
+request_timeout_secs: 3       # per-branch request timeout
+retry_interval_secs: 10       # retry interval when branch fails
+timeout_to_fail_secs: 35      # overall timeout to mark branch failed
+branch_parallelism: 8         # max concurrent branches on submit
+
+# Storage (env vars can override selection). The server currently prefers
+# SEATA_STORE/SEATA_* envs. Uncomment one block below for reference.
+
+#store:
+#  driver: boltdb
+
+store:
+ driver: redis
+ host: 127.0.0.1
+ user: ""
+ # If empty, no AUTH is attempted. To set via env, use SEATA_REDIS_URL
+ # e.g. redis://:password@127.0.0.1:6379/0
+ password: ""
+ port: 6379
+ data_expire: 0
+ finished_data_expire: 0
+ redis_prefix: ""
+
+#store:
+#  driver: mysql
+#  host: 127.0.0.1
+#  user: root
+#  password: password
+#  port: 3306
+#  db: dtm
+#  max_open_conns: 50
+#  max_idle_conns: 10
+#  conn_max_life_time_minutes: 30
+
+#store:
+#  driver: postgres
+#  host: 127.0.0.1
+#  user: postgres
+#  password: mysecretpassword
+#  port: 5432
+#  db: postgres
+#  schema: public
+#  max_open_conns: 50
+#  max_idle_conns: 10
+#  conn_max_life_time_minutes: 30
+
+
+
+# Service registry (optional). If configured to etcd, the server will register
+# its HTTP/GRPC addresses into etcd with a TTL lease and keepalive.
+# Env vars (if present) override these settings:
+# - SEATA_ETCD_ENDPOINTS: comma-separated endpoints, e.g. http://127.0.0.1:2379
+# - SEATA_ETCD_NS: namespace/prefix for keys (default: /seata)
+# - SEATA_INSTANCE_ID: fixed instance id; if empty, a random UUID will be used
+registry:
+ driver: etcd          # or empty to disable
+ endpoints:
+  - "http://127.0.0.1:2379"
+ namespace: "/seata"
+ instance_id: ""
