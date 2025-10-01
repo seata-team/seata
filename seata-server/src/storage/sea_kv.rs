@@ -1,7 +1,8 @@
 use super::KV;
 use anyhow::Result;
 use async_trait::async_trait;
-use sea_orm::{entity::prelude::*, Database, DatabaseConnection, Set, Statement, DbBackend, IntoActiveModel, QuerySelect};
+use sea_orm::{entity::prelude::*, Database, DatabaseConnection, Set, Statement, DbBackend, IntoActiveModel, QuerySelect, ConnectOptions};
+use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "kv")]
@@ -22,13 +23,27 @@ pub struct SeaKv {
 }
 
 impl SeaKv {
-    pub async fn mysql(dsn: &str) -> Result<Self> {
-        let db = Database::connect(dsn).await?;
+    pub async fn mysql_with_pool(dsn: &str, max_open: Option<u32>, max_idle: Option<u32>, max_life_min: Option<u64>) -> Result<Self> {
+        let mut opt = ConnectOptions::new(dsn.to_string());
+        if let Some(m) = max_open { opt.max_connections(m); } else { opt.max_connections(50); }
+        if let Some(m) = max_idle { opt.min_connections(m); } else { opt.min_connections(5); }
+        opt.connect_timeout(Duration::from_secs(5))
+            .idle_timeout(Duration::from_secs(30))
+            .sqlx_logging(false);
+        if let Some(_min) = max_life_min { /* max lifetime not exposed directly; skipped */ }
+        let db = Database::connect(opt).await?;
         db.execute(Statement::from_string(DbBackend::MySql, String::from("CREATE TABLE IF NOT EXISTS kv (k VARBINARY(255) PRIMARY KEY, v LONGBLOB)"))).await?;
         Ok(Self { db })
     }
-    pub async fn postgres(dsn: &str) -> Result<Self> {
-        let db = Database::connect(dsn).await?;
+    pub async fn postgres_with_pool(dsn: &str, max_open: Option<u32>, max_idle: Option<u32>, max_life_min: Option<u64>) -> Result<Self> {
+        let mut opt = ConnectOptions::new(dsn.to_string());
+        if let Some(m) = max_open { opt.max_connections(m); } else { opt.max_connections(50); }
+        if let Some(m) = max_idle { opt.min_connections(m); } else { opt.min_connections(5); }
+        opt.connect_timeout(Duration::from_secs(5))
+            .idle_timeout(Duration::from_secs(30))
+            .sqlx_logging(false);
+        if let Some(_min) = max_life_min { /* max lifetime not exposed directly; skipped */ }
+        let db = Database::connect(opt).await?;
         db.execute(Statement::from_string(DbBackend::Postgres, String::from("CREATE TABLE IF NOT EXISTS kv (k bytea PRIMARY KEY, v bytea)"))).await?;
         Ok(Self { db })
     }

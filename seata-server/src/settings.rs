@@ -13,6 +13,11 @@ pub struct Settings {
     pub timeout_to_fail_secs: u64,
     pub branch_parallelism: usize,
 
+    // DB pool configuration (optional)
+    pub max_open_conns: Option<u32>,
+    pub max_idle_conns: Option<u32>,
+    pub conn_max_life_time_minutes: Option<u64>,
+
     pub store: Store,
     pub registry: Option<Registry>,
 }
@@ -29,6 +34,9 @@ impl Default for Settings {
             retry_interval_secs: 10,
             timeout_to_fail_secs: 35,
             branch_parallelism: 8,
+            max_open_conns: None,
+            max_idle_conns: None,
+            conn_max_life_time_minutes: None,
             store: Store::default(),
             registry: None,
         }

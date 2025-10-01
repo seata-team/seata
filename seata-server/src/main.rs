@@ -2,6 +2,8 @@ use std::{net::SocketAddr};
 
 use anyhow::Result;
 use axum::{routing::{get, post}, Router, Json};
+use tower_http::compression::CompressionLayer;
+use tower_http::timeout::TimeoutLayer;
 use tokio::signal;
 use tracing::{info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -16,7 +18,7 @@ use seata_proto::txn::{StartGlobalRequest, StartGlobalResponse, SubmitRequest, S
 use etcd_client as etcd;
 
 #[derive(Clone)]
-struct AppState { metrics: Registry, saga: Arc<SagaManager<DynTxnRepo>>, barrier: Arc<dyn BarrierOps> }
+struct AppState { metrics: Registry, saga: Arc<SagaManager<DynTxnRepo>>, barrier: Arc<dyn BarrierOps>, http_client: reqwest::Client }
 
 struct TxnSvcImpl { saga: Arc<SagaManager<DynTxnRepo>>, barrier: Arc<dyn BarrierOps> }
 
@@ -117,11 +119,11 @@ async fn main() -> Result<()> {
             Arc::new(DynTxnRepo::new(Box::new(r)))
         } else if store == "mysql" {
             let dsn = std::env::var("SEATA_MYSQL_DSN").unwrap_or_else(|_| "mysql://root:password@127.0.0.1:3306/dtm".to_string());
-            let kv = SeaKv::mysql(&dsn).await?;
+            let kv = SeaKv::mysql_with_pool(&dsn, cfg.max_open_conns, cfg.max_idle_conns, cfg.conn_max_life_time_minutes).await?;
             Arc::new(DynTxnRepo::new(Box::new(kv)))
         } else if store == "postgres" {
             let dsn = std::env::var("SEATA_POSTGRES_DSN").unwrap_or_else(|_| "postgres://postgres:mysecretpassword@127.0.0.1:5432/postgres".to_string());
-            let kv = SeaKv::postgres(&dsn).await?;
+            let kv = SeaKv::postgres_with_pool(&dsn, cfg.max_open_conns, cfg.max_idle_conns, cfg.conn_max_life_time_minutes).await?;
             Arc::new(DynTxnRepo::new(Box::new(kv)))
         } else {
             let kv = SledKv::open("./data/seata-sled")?;
@@ -136,12 +138,12 @@ async fn main() -> Result<()> {
             }
             settings::Store::Mysql { ref host, ref user, ref password, port, ref db, .. } => {
                 let dsn = format!("mysql://{}:{}@{}:{}/{}", user, password, host, port, db);
-                let kv = SeaKv::mysql(&dsn).await?;
+                let kv = SeaKv::mysql_with_pool(&dsn, cfg.max_open_conns, cfg.max_idle_conns, cfg.conn_max_life_time_minutes).await?;
                 Arc::new(DynTxnRepo::new(Box::new(kv)))
             }
             settings::Store::Postgres { ref host, ref user, ref password, port, ref db, .. } => {
                 let dsn = format!("postgres://{}:{}@{}:{}/{}", user, password, host, port, db);
-                let kv = SeaKv::postgres(&dsn).await?;
+                let kv = SeaKv::postgres_with_pool(&dsn, cfg.max_open_conns, cfg.max_idle_conns, cfg.conn_max_life_time_minutes).await?;
                 Arc::new(DynTxnRepo::new(Box::new(kv)))
             }
             settings::Store::Boltdb => {
@@ -170,10 +172,10 @@ async fn main() -> Result<()> {
             Arc::new(Barrier::new(RedisKv::new(&url)?))
         } else if store == "mysql" {
             let dsn = std::env::var("SEATA_MYSQL_DSN").unwrap_or_else(|_| "mysql://root:password@127.0.0.1:3306/dtm".to_string());
-            Arc::new(Barrier::new(SeaKv::mysql(&dsn).await?))
+            Arc::new(Barrier::new(SeaKv::mysql_with_pool(&dsn, cfg.max_open_conns, cfg.max_idle_conns, cfg.conn_max_life_time_minutes).await?))
         } else if store == "postgres" {
             let dsn = std::env::var("SEATA_POSTGRES_DSN").unwrap_or_else(|_| "postgres://postgres:mysecretpassword@127.0.0.1:5432/postgres".to_string());
-            Arc::new(Barrier::new(SeaKv::postgres(&dsn).await?))
+            Arc::new(Barrier::new(SeaKv::postgres_with_pool(&dsn, cfg.max_open_conns, cfg.max_idle_conns, cfg.conn_max_life_time_minutes).await?))
         } else {
             Arc::new(Barrier::new(SledKv::open("./data/seata-sled")?))
         }
@@ -186,18 +188,18 @@ async fn main() -> Result<()> {
             }
             settings::Store::Mysql { ref host, ref user, ref password, port, ref db, .. } => {
                 let dsn = format!("mysql://{}:{}@{}:{}/{}", user, password, host, port, db);
-                Arc::new(Barrier::new(SeaKv::mysql(&dsn).await?))
+                Arc::new(Barrier::new(SeaKv::mysql_with_pool(&dsn, cfg.max_open_conns, cfg.max_idle_conns, cfg.conn_max_life_time_minutes).await?))
             }
             settings::Store::Postgres { ref host, ref user, ref password, port, ref db, .. } => {
                 let dsn = format!("postgres://{}:{}@{}:{}/{}", user, password, host, port, db);
-                Arc::new(Barrier::new(SeaKv::postgres(&dsn).await?))
+                Arc::new(Barrier::new(SeaKv::postgres_with_pool(&dsn, cfg.max_open_conns, cfg.max_idle_conns, cfg.conn_max_life_time_minutes).await?))
             }
             settings::Store::Boltdb => {
                 Arc::new(Barrier::new(SledKv::open("./data/seata-sled")?))
             }
         }
     };
-    let state = Arc::new(AppState { metrics: registry, saga: saga.clone(), barrier });
+    let state = Arc::new(AppState { metrics: registry, saga: saga.clone(), barrier, http_client: reqwest::Client::new() });
 
     // http router
     let app = Router::new()
@@ -215,6 +217,8 @@ async fn main() -> Result<()> {
         .route("/jsonrpc", post(jsonrpc_dispatch))
         .route("/admin/{*path}", get(admin_proxy))
         .route("/", get(admin_proxy))
+        .layer(CompressionLayer::new())
+        .layer(TimeoutLayer::new(std::time::Duration::from_secs(cfg.request_timeout_secs)))
         .with_state(state.clone());
 
     // addr from env or default
@@ -515,15 +519,14 @@ async fn http_list_tx(State(state): State<Arc<AppState>>, axum::extract::Query(q
     }
 }
 
-async fn admin_proxy(State(_state): State<Arc<AppState>>, uri: axum::http::Uri) -> impl IntoResponse {
+async fn admin_proxy(State(state): State<Arc<AppState>>, uri: axum::http::Uri) -> impl IntoResponse {
     let lang = std::env::var("LANG").unwrap_or_default();
     let host = if lang.starts_with("zh_CN") { "cn-admin.dtm.pub" } else { "admin.dtm.pub" };
     let path = uri.path().to_string();
     // strip optional admin base path if configured (not yet used elsewhere)
     // keep path as-is; remote expects same path
     let url = format!("http://{}{}", host, path);
-    let client = reqwest::Client::new();
-    match client.get(&url).send().await {
+    match state.http_client.get(&url).timeout(std::time::Duration::from_secs(3)).send().await {
         Ok(resp) => {
             let status = axum::http::StatusCode::from_u16(resp.status().as_u16()).unwrap_or(axum::http::StatusCode::OK);
             let headers = resp.headers().clone();

@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seata-server
+  labels:
+    app: seata-server
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: seata-server
+  template:
+    metadata:
+      labels:
+        app: seata-server
+    spec:
+      containers:
+        - name: seata-server
+          image: seata-server:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 36789
+            - containerPort: 36790
+          env:
+            - name: SEATA_STORE
+              value: "redis"
+            - name: SEATA_REDIS_URL
+              value: "redis://redis:6379/"
+            - name: SEATA_BRANCH_PARALLELISM
+              value: "64"
+            - name: SEATA_REQUEST_TIMEOUT_SECS
+              value: "2"
+            - name: SEATA_RETRY_INTERVAL_SECS
+              value: "0"
+            - name: SEATA_TIMEOUT_TO_FAIL_SECS
+              value: "35"
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "1Gi"
+            limits:
+              cpu: "4"
+              memory: "4Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 36789
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 36789
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+      securityContext:
+        fsGroup: 65532
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: seata-server
+  labels:
+    app: seata-server
+spec:
+  selector:
+    app: seata-server
+  ports:
+    - name: http
+      port: 36789
+      targetPort: 36789
+    - name: grpc
+      port: 36790
+      targetPort: 36790
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: seata-server
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: seata-server
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+

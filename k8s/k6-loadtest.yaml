@@ -1,0 +1,64 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k6-script
+data:
+  script.js: |
+    import http from 'k6/http';
+    import { check, sleep } from 'k6';
+    export const options = {
+      scenarios: {
+        high_qps: {
+          executor: 'constant-arrival-rate',
+          rate: 50000,
+          timeUnit: '1s',
+          duration: '120s',
+          preAllocatedVUs: 2000,
+          maxVUs: 4000,
+        },
+      },
+      thresholds: {
+        http_req_failed: ['rate<0.005'],
+        http_req_duration: ['p(99)<600'],
+      },
+    };
+    const BASE = __ENV.BASE_URL || 'http://seata-server-50k:36789';
+    export default function () {
+      // Start -> add 2 branches -> submit
+      const payload = JSON.stringify({ gid: '', mode: 'saga', payload: 'dGVzdA==' });
+      let r = http.post(`${BASE}/api/start`, payload, { headers: { 'Content-Type': 'application/json' } });
+      check(r, { 'start 200': (res) => res.status === 200 });
+      const gid = r.json('gid');
+      if (!gid) return;
+      const b1 = JSON.stringify({ gid, branch_id: `b1-${__ITER}`, action: `${BASE}/ok` });
+      const b2 = JSON.stringify({ gid, branch_id: `b2-${__ITER}`, action: `${BASE}/ok` });
+      http.post(`${BASE}/api/branch/add`, b1, { headers: { 'Content-Type': 'application/json' } });
+      http.post(`${BASE}/api/branch/add`, b2, { headers: { 'Content-Type': 'application/json' } });
+      http.post(`${BASE}/api/submit`, JSON.stringify({ gid }), { headers: { 'Content-Type': 'application/json' } });
+      sleep(0.001);
+    }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-seata-50k
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:0.50.0
+          args: ["run", "/scripts/script.js"]
+          env:
+            - name: BASE_URL
+              value: "http://seata-server-50k:36789"
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+      volumes:
+        - name: scripts
+          configMap:
+            name: k6-script
+

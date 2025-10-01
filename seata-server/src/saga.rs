@@ -4,11 +4,13 @@ use anyhow::Result;
 use std::sync::Arc;
 use base64::Engine;
 use prometheus::{Counter, Histogram};
+use reqwest::Client;
 
 pub struct SagaManager<R: TxnRepo> {
     repo: Arc<R>,
     exec: ExecConfig,
     metrics: Option<Arc<SagaMetrics>>,
+    http_client: Client,
 }
 
 #[derive(Clone, Copy)]
@@ -27,7 +29,16 @@ pub struct SagaMetrics {
 }
 
 impl<R: TxnRepo> SagaManager<R> {
-    pub fn new(repo: Arc<R>) -> Self { Self { repo, exec: ExecConfig { request_timeout_secs: 3, retry_interval_secs: 10, timeout_to_fail_secs: 35, branch_parallelism: 8 }, metrics: None } }
+    pub fn new(repo: Arc<R>) -> Self {
+        let client = reqwest::Client::builder()
+            .pool_idle_timeout(std::time::Duration::from_secs(30))
+            .pool_max_idle_per_host(8)
+            .tcp_keepalive(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        Self { repo, exec: ExecConfig { request_timeout_secs: 3, retry_interval_secs: 10, timeout_to_fail_secs: 35, branch_parallelism: 8 }, metrics: None, http_client: client }
+    }
 
     pub fn with_exec_config(mut self, exec: ExecConfig) -> Self { self.exec = exec; self }
     pub fn with_metrics(mut self, metrics: Arc<SagaMetrics>) -> Self { self.metrics = Some(metrics); self }
@@ -48,36 +59,46 @@ impl<R: TxnRepo> SagaManager<R> {
             tx.updated_unix = chrono::Utc::now().timestamp();
             self.repo.save(&tx).await?;
 
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(self.exec.request_timeout_secs))
-                .build()?;
             // execute prepared branches with concurrency limit
             let sem = Arc::new(tokio::sync::Semaphore::new(self.exec.branch_parallelism.max(1)));
             let mut handles = Vec::new();
+            // precompute base64 payload once per submit
+            let encoded_payload = base64::engine::general_purpose::STANDARD.encode(&tx.payload);
             for i in 0..tx.branches.len() {
                 if tx.branches[i].status != BranchStatus::Prepared { continue; }
                 let permit = sem.clone().acquire_owned().await.unwrap();
-                let client = client.clone();
+                let client = self.http_client.clone();
                 let url = tx.branches[i].action.clone();
                 let gid = tx.gid.clone();
                 let branch_id = tx.branches[i].branch_id.clone();
                 let mode = tx.mode.clone();
-                let payload = tx.payload.clone();
+                let encoded_payload = encoded_payload.clone();
                 let exec = self.exec;
                 let metrics = self.metrics.clone();
                 handles.push(tokio::spawn(async move {
                     let _permit = permit;
-                    let body = serde_json::json!({ "gid": gid, "branch_id": branch_id, "mode": mode, "payload": base64::engine::general_purpose::STANDARD.encode(&payload) });
+                    let body = serde_json::json!({ "gid": gid, "branch_id": branch_id, "mode": mode, "payload": encoded_payload });
                     let start = std::time::Instant::now();
+                    // stable per-branch jitter to avoid herd effects (0-299ms)
+                    let jitter_ms: u64 = {
+                        let mut sum: u32 = 0;
+                        for b in branch_id.as_bytes() { sum = sum.wrapping_add(*b as u32); }
+                        (sum % 300) as u64
+                    };
                     loop {
-                        if let Ok(resp) = client.post(&url).json(&body).send().await {
+                        if let Ok(resp) = client.post(&url)
+                                .timeout(std::time::Duration::from_secs(exec.request_timeout_secs))
+                                .json(&body)
+                                .send()
+                                .await {
                                 if resp.status().is_success() {
                                     if let Some(m) = &metrics { m.branch_success_total.inc(); m.branch_latency_seconds.observe(start.elapsed().as_secs_f64()); }
                                     return true;
                                 }
                         }
                         if start.elapsed() >= std::time::Duration::from_secs(exec.timeout_to_fail_secs) { return false; }
-                        tokio::time::sleep(std::time::Duration::from_secs(exec.retry_interval_secs)).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(exec.retry_interval_secs)
+                            + std::time::Duration::from_millis(jitter_ms)).await;
                     }
                 }));
             }

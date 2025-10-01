@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seata-server-50k
+  labels:
+    app: seata-server-50k
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      app: seata-server-50k
+  template:
+    metadata:
+      labels:
+        app: seata-server-50k
+    spec:
+      containers:
+        - name: seata-server
+          image: seata-server:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 36789
+            - containerPort: 36790
+          env:
+            - name: SEATA_STORE
+              value: "redis"
+            - name: SEATA_REDIS_URL
+              value: "redis://redis-cluster:6379/"
+            - name: SEATA_BRANCH_PARALLELISM
+              value: "160"
+            - name: SEATA_REQUEST_TIMEOUT_SECS
+              value: "1"
+            - name: SEATA_RETRY_INTERVAL_SECS
+              value: "0"
+            - name: SEATA_TIMEOUT_TO_FAIL_SECS
+              value: "35"
+            - name: RUST_LOG
+              value: "warn"
+          resources:
+            requests:
+              cpu: "4000m"
+              memory: "8Gi"
+            limits:
+              cpu: "8000m"
+              memory: "16Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 36789
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 36789
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+      securityContext:
+        fsGroup: 65532
+      nodeSelector:
+        node.kubernetes.io/instance-type: highcpu
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: seata-server-50k
+  labels:
+    app: seata-server-50k
+spec:
+  selector:
+    app: seata-server-50k
+  ports:
+    - name: http
+      port: 36789
+      targetPort: 36789
+    - name: grpc
+      port: 36790
+      targetPort: 36790
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: seata-server-50k
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: seata-server-50k
+  minReplicas: 8
+  maxReplicas: 16
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+

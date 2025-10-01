@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  seata-server:
+    environment:
+      - SEATA_STORE=redis
+      - SEATA_REDIS_URL=redis://redis:6379/
+      - SEATA_BRANCH_PARALLELISM=64
+      - SEATA_REQUEST_TIMEOUT_SECS=2
+      - SEATA_RETRY_INTERVAL_SECS=0
+      - SEATA_TIMEOUT_TO_FAIL_SECS=35
+      - RUST_LOG=info
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4g
+        reservations:
+          cpus: '1.0'
+          memory: 1g
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxclients 10000
+    ports:
+      - "6379:6379"
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+

@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cluster
+  labels:
+    app: redis-cluster
+spec:
+  clusterIP: None
+  selector:
+    app: redis-cluster
+  ports:
+    - name: client
+      port: 6379
+      targetPort: 6379
+    - name: gossip
+      port: 16379
+      targetPort: 16379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-cluster
+  labels:
+    app: redis-cluster
+spec:
+  serviceName: redis-cluster
+  replicas: 6
+  selector:
+    matchLabels:
+      app: redis-cluster
+  template:
+    metadata:
+      labels:
+        app: redis-cluster
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args:
+            - sh
+            - -c
+            - |
+              cat <<EOF > /redis.conf
+              port 6379
+              protected-mode no
+              cluster-enabled yes
+              cluster-config-file nodes.conf
+              cluster-node-timeout 5000
+              cluster-announce-port 6379
+              cluster-announce-bus-port 16379
+              appendonly no
+              maxclients 20000
+              EOF
+              redis-server /redis.conf --cluster-announce-ip $(hostname -f)
+          ports:
+            - containerPort: 6379
+            - containerPort: 16379
+          resources:
+            requests:
+              cpu: "4000m"
+              memory: "16Gi"
+            limits:
+              cpu: "8000m"
+              memory: "32Gi"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 50Gi
+---
+# Cluster create job (optional) to join nodes into a cluster)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redis-cluster-create
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: redis-cli
+          image: redis:7-alpine
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              HOSTS=$(getent hosts redis-cluster-0.redis-cluster | awk '{print $1}')
+              NODES=""
+              for i in 0 1 2 3 4 5; do
+                NODES="$NODES redis-cluster-$i.redis-cluster:6379"
+              done
+              echo "Creating cluster with: $NODES"
+              yes yes | redis-cli --cluster create $NODES --cluster-replicas 1
+
