@@ -175,11 +175,11 @@ export SEATA_REDIS_URL=redis://127.0.0.1/
 # With password
 # export SEATA_REDIS_URL=redis://:password@127.0.0.1:6379/0
 
-# MySQL configuration
-export SEATA_MYSQL_URL=mysql://user:pass@localhost:3306/seata
+# MySQL configuration (DSN)
+export SEATA_MYSQL_DSN=mysql://user:pass@localhost:3306/seata
 
-# PostgreSQL configuration
-export SEATA_POSTGRES_URL=postgres://user:pass@localhost:5432/seata
+# PostgreSQL configuration (DSN)
+export SEATA_POSTGRES_DSN=postgres://user:pass@localhost:5432/seata
 
 # Server ports
 export SEATA_HTTP_PORT=36789
@@ -190,6 +190,11 @@ export SEATA_REQUEST_TIMEOUT_SECS=30
 export SEATA_RETRY_INTERVAL_SECS=1
 export SEATA_TIMEOUT_TO_FAIL_SECS=60
 export SEATA_BRANCH_PARALLELISM=10
+
+# Connection pool (for MySQL/Postgres via SeaORM)
+export SEATA_MAX_OPEN_CONNS=200
+export SEATA_MAX_IDLE_CONNS=20
+export SEATA_CONN_MAX_LIFE_TIME_MINUTES=30
 ```
 
 ### Configuration File
@@ -225,6 +230,9 @@ exec:
 # Start all services
 docker-compose up -d
 
+# High concurrency override (compose v2+)
+docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
+
 # Check service status
 docker-compose ps
 
@@ -245,10 +253,32 @@ SEATA_STORE=redis SEATA_REDIS_URL=redis://127.0.0.1/ \
 
 ### Production Deployment
 
-1. **Use production storage backend** (MySQL/PostgreSQL)
+1. **Use production storage backend** (Redis preferred for high throughput；MySQL/PostgreSQL for audit/ACID)
 2. **Configure monitoring** (Prometheus/Grafana)
 3. **Set up load balancing** for high availability
 4. **Configure backup strategies** for data persistence
+
+### Kubernetes Deployment (Examples)
+
+```bash
+# Redis Cluster for high QPS
+kubectl apply -f seata/k8s/redis-cluster.yaml
+
+# Seata 50k QPS tuned deployment + service + HPA
+kubectl apply -f seata/k8s/seata-server-50k.yaml
+
+# Ingress with TLS (requires cert-manager installed)
+kubectl apply -f seata/k8s/cert-issuer.yaml
+kubectl apply -f seata/k8s/ingress.yaml
+
+# Optional: Gateway API variant
+# kubectl apply -f seata/k8s/gateway.yaml
+
+# k6 load test (50k rps target)
+kubectl apply -f seata/k8s/k6-loadtest.yaml
+```
+
+> Replace `seata.example.com` and `admin@example.com` with your domain/email.
 
 ## 📊 Monitoring
 
@@ -362,11 +392,12 @@ cargo audit
 
 ### Optimization Tips
 
-1. **Use Redis for high-performance scenarios**
-2. **Configure appropriate branch parallelism**
-3. **Set reasonable timeouts for branch execution**
-4. **Monitor memory usage with large payloads**
-5. **Use connection pooling for database backends**
+1. **Use Redis (Cluster) for high throughput**
+2. **Tune branch_parallelism (e.g., 32–192)**
+3. **Short timeouts + jittered retries**
+4. **Enable HTTP compression and shared clients**
+5. **Use SeaORM pool with proper max/min connections**
+6. **Monitor P95/P99 latency and failure rate**
 
 ## 🔒 Security
 
